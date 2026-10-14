@@ -550,159 +550,76 @@
         window.quoteMessage = function(s, t) { document.getElementById('group-chat-input').value = `> @${decodeURIComponent(s)}: "${decodeURIComponent(t)}"\n`; };
         function escapeHTML(str) { return str.replace(/[&<>'"]/g, t => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[t] || t)); }
 
-        async function initWebRTC(roomId) {
-            peerConnection = new RTCPeerConnection(servers);
-            remoteStream = new MediaStream();
-            document.getElementById('remote-video').srcObject = remoteStream;
-            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+       async function initWebRTC(roomId) {
+    peerConnection = new RTCPeerConnection(servers);
+    remoteStream = new MediaStream();
+    document.getElementById('remote-video').srcObject = remoteStream;
+    localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
 
-            peerConnection.ontrack = event => {
-                event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
-                document.getElementById('waiting-overlay').classList.add('hidden');
-                document.getElementById('remote-video').classList.remove('hidden');
-                document.getElementById('remote-footer').classList.remove('hidden');
-            };
+    peerConnection.ontrack = event => {
+        event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
+        document.getElementById('waiting-overlay').classList.add('hidden');
+        document.getElementById('remote-video').classList.remove('hidden');
+        document.getElementById('remote-footer').classList.remove('hidden');
+    };
 
-            const roomRef = db.collection('rooms').doc(roomId);
-            const snap = await roomRef.get();
+    const roomRef = db.collection('rooms').doc(roomId);
+    const snap = await roomRef.get();
 
-            if (!snap.exists) {
-                window.isAdmin = true; // <-- ADD THIS LINE HERE
-                 const offerCandidates = roomRef.collection('offerCandidates');
-                const answerCandidates = roomRef.collection('answerCandidates');
-                peerConnection.onicecandidate = e => e.candidate && offerCandidates.add(e.candidate.toJSON());
-                const offer = await peerConnection.createOffer();
-                await peerConnection.setLocalDescription(offer);
-                await roomRef.set({ offer: { type: offer.type, sdp: offer.sdp } });
+    const offerCandidates = roomRef.collection('offerCandidates');
+    const answerCandidates = roomRef.collection('answerCandidates');
 
-                roomRef.onSnapshot(async s => {
-                    const d = s.data();
-                    if (!peerConnection.currentRemoteDescription && d && d.answer) {
-                        await peerConnection.setRemoteDescription(new RTCSessionDescription(d.answer));
-                    }
-                });
-                answerCandidates.onSnapshot(s => s.docChanges().forEach(c => c.type === 'added' && peerConnection.addIceCandidate(new RTCIceCandidate(c.doc.data()))));
-    
-        } else {
-    window.isAdmin = false; // <-- ADD THIS LINE HERE
-    // ... rest of your existing answer/candidate code ...
-}
-                const data = snap.data();
-                const offerCandidates = roomRef.collection('offerCandidates');
-                const answerCandidates = roomRef.collection('answerCandidates');
-                peerConnection.onicecandidate = e => e.candidate && answerCandidates.add(e.candidate.toJSON());
-                await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
-                const answer = await peerConnection.createAnswer();
-                await peerConnection.setLocalDescription(answer);
-                await roomRef.update({ answer: { type: answer.type, sdp: answer.sdp } });
-                offerCandidates.onSnapshot(s => s.docChanges().forEach(c => c.type === 'added' && peerConnection.addIceCandidate(new RTCIceCandidate(c.doc.data()))));
+    if (!snap.exists) {
+        window.isAdmin = true; 
+        
+        peerConnection.onicecandidate = e => e.candidate && offerCandidates.add(e.candidate.toJSON());
+        
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
+        await roomRef.set({ offer: { type: offer.type, sdp: offer.sdp } });
+
+        roomRef.onSnapshot(async s => {
+            const d = s.data();
+            if (!peerConnection.currentRemoteDescription && d && d.answer) {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(d.answer));
             }
-    
+        });
 
-        window.copyInviteLink = function() {
-            navigator.clipboard.writeText(window.location.href).then(() => {
-                document.getElementById('copy-btn-text').innerText = "Copied Link! ✓";
-                setTimeout(() => { document.getElementById('copy-btn-text').innerText = "Copy Invite Link"; }, 2500);
+        answerCandidates.onSnapshot(s => {
+            s.docChanges().forEach(c => {
+                if (c.type === 'added') {
+                    peerConnection.addIceCandidate(new RTCIceCandidate(c.doc.data()));
+                }
             });
-            document.querySelectorAll('.admin-only-control').forEach(el => {
+        });
+
+    } else {
+        window.isAdmin = false; 
+
+        peerConnection.onicecandidate = e => e.candidate && answerCandidates.add(e.candidate.toJSON());
+
+        const data = snap.data();
+        if (data && data.offer) {
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
+            await roomRef.update({ answer: { type: answer.type, sdp: answer.sdp } });
+        }
+
+        offerCandidates.onSnapshot(s => {
+            s.docChanges().forEach(c => {
+                if (c.type === 'added') {
+                    peerConnection.addIceCandidate(new RTCIceCandidate(c.doc.data()));
+                }
+            });
+        });
+    }
+
+    // Toggle admin UI controls based on single-admin check
+    document.querySelectorAll('.admin-only-control').forEach(el => {
         el.style.display = window.isAdmin ? 'flex' : 'none';
     });
-};
-
-        window.toggleAudio = function() {
-            if (!localStream) return;
-            isAudioMuted = !isAudioMuted;
-            localStream.getAudioTracks().forEach(t => t.enabled = !isAudioMuted);
-            document.getElementById('btn-mute').innerHTML = isAudioMuted ? '<span>🔇</span> <span>Unmute</span>' : '<span>🎙️</span> <span>Mute</span>';
-            updateStatusBadge();
-        };
-
-        window.toggleVideo = function() {
-            if (!localStream) return;
-            isVideoStopped = !isVideoStopped;
-            localStream.getVideoTracks().forEach(t => t.enabled = !isVideoStopped);
-            document.getElementById('btn-cam').innerHTML = isVideoStopped ? '<span>📷</span> <span>Start Cam</span>' : '<span>📹</span> <span>Stop Cam</span>';
-            updateStatusBadge();
-        };
-
-        function updateStatusBadge() {
-            const badge = document.getElementById('local-status-badge');
-            if (isAudioMuted && isVideoStopped) {
-                badge.innerText = "Mic & Cam Off"; badge.className = "text-[10px] text-amber-300 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20";
-            } else if (!isAudioMuted && !isVideoStopped) {
-                badge.innerText = "Live 🔴"; badge.className = "text-[10px] text-emerald-300 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20";
-            } else {
-                badge.innerText = isAudioMuted ? "Mic Off" : "Cam Off"; badge.className = "text-[10px] text-indigo-300 bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/20";
-            }
-        }
-
-        window.toggleScreenShare = async function() {
-            try {
-                if (!isScreenSharing) {
-                    const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-                    const track = stream.getVideoTracks()[0];
-                    peerConnection.getSenders().find(s => s.track && s.track.kind === 'video').replaceTrack(track);
-                    document.getElementById('local-video').srcObject = stream;
-                    isScreenSharing = true;
-                    track.onended = () => stopScreenShare();
-                } else { stopScreenShare(); }
-            } catch(e) {}
-        };
-
-        function stopScreenShare() {
-            isScreenSharing = false;
-            const track = localStream.getVideoTracks()[0];
-            peerConnection.getSenders().find(s => s.track && s.track.kind === 'video').replaceTrack(track);
-            document.getElementById('local-video').srcObject = localStream;
-        }
-
-        window.leaveRoom = function() { if(localStream) localStream.getTracks().forEach(t => t.stop()); window.location.href = window.location.pathname; };
-        window.toggleReaderModal = function() { document.getElementById('reader-modal').classList.toggle('hidden'); };
-        window.toggleGlossaryModal = function() { document.getElementById('glossary-modal').classList.toggle('hidden'); };
-
-        window.togglePomodoro = function() {
-            const btn = document.getElementById('pomo-btn');
-            if (!pomoRunning) {
-                pomoRunning = true; btn.innerText = "Pause";
-                pomoInterval = setInterval(() => {
-                    if (pomoTimeLeft > 0) { pomoTimeLeft--; updatePomoDisplay(); }
-                    else { clearInterval(pomoInterval); pomoRunning = false; alert("Session done!"); }
-                }, 1000);
-            } else { pomoRunning = false; clearInterval(pomoInterval); btn.innerText = "Resume"; }
-        };
-        window.resetPomodoro = function() { clearInterval(pomoInterval); pomoRunning = false; pomoTimeLeft = 25*60; updatePomoDisplay(); };
-        function updatePomoDisplay() {
-            const m = Math.floor(pomoTimeLeft / 60), s = pomoTimeLeft % 60;
-            document.getElementById('pomo-display').innerText = `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
-        }
-
-        window.switchTab = function(tab) {
-            document.getElementById('tab-content-chat').classList.toggle('hidden', tab !== 'chat');
-            document.getElementById('tab-content-ai').classList.toggle('hidden', tab !== 'ai');
-        };
-
-        async function processGroqQuery(query) {
-            if(!query) return;
-            let apiKey = localStorage.getItem('meetsync_groq_key');
-            if (!apiKey) { apiKey = prompt("Enter your free Groq API Key:"); localStorage.setItem('meetsync_groq_key', apiKey.trim()); }
-
-            const userHtml = `<div class="text-right mb-3"><span class="bg-indigo-600/40 px-3 py-1.5 rounded-xl inline-block"><b>You:</b> ${query}</span></div>`;
-            document.getElementById('chat-box').innerHTML += userHtml;
-            document.getElementById('ai-input').value = "";
-
-            try {
-                const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-                    body: JSON.stringify({ model: "openai/gpt-oss-120b", messages: [{ role: "system", content: "You are an elite medical educator. Give structured markdown answers." }, { role: "user", content: query }] })
-                });
-                const data = await res.json();
-                const reply = data.choices?.[0]?.message?.content || "No response.";
-                document.getElementById('chat-box').innerHTML += `<div class="text-left mb-4"><div class="bg-slate-900/95 border border-slate-800 p-3 rounded-xl"><b>Groq AI:</b><br>${reply}</div></div>`;
-            } catch(e) { alert(e.message); }
-        }
-        window.askAI = function() { processGroqQuery(document.getElementById('ai-input').value.trim()); };
-        window.exportToAnki = function() { alert("Anki deck formatted and ready!"); };
+}
     </script>
 </body>
 </html>
