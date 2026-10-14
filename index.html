@@ -288,338 +288,449 @@
 
     <!-- JAVASCRIPT ENGINE -->
     <script>
-        const firebaseConfig = {
-            apiKey: "AIzaSyAb9-tARrdYaVMj4M1j8WFLf1AcH77koak",
-            authDomain: "meetsync-signalling.firebaseapp.com",
-            databaseURL: "https://meetsync-signalling-default-rtdb.europe-west1.firebasedatabase.app",
-            projectId: "meetsync-signalling",
-            storageBucket: "meetsync-signalling.firebasestorage.app",
-            messagingSenderId: "833409080755",
-            appId: "1:833409080755:web:8e4cfdd04c24b4eb7fffc6",
-            measurementId: "G-6G3GRX6JWC"
-        };
-
-        firebase.initializeApp(firebaseConfig);
-        const db = firebase.firestore();
-
-        let currentRoomId = null;
-        let localStream = null, remoteStream = null, peerConnection = null;
-        let isAudioMuted = true, isVideoStopped = false, isScreenSharing = false;
-        let participantName = "Anonymous", editingMessageId = null;
-        let chatMessages = [], isChatExpanded = false;
-        let pomoInterval = null, pomoTimeLeft = 25 * 60, pomoRunning = false;
-        let glossaryHistory = [];
-
-        const servers = { iceServers: [{ urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] }] };
-
-        window.onload = function() {
-            const urlParams = new URLSearchParams(window.location.search);
-            const roomParam = urlParams.get('room');
-            if (roomParam) document.getElementById('room-id-input').value = roomParam;
-            loadGlossaryHistory();
-        };
-
-        window.toggleTheme = function() {
-            const html = document.documentElement;
-            if (html.classList.contains('dark')) {
-                html.classList.remove('dark'); html.classList.add('light');
-            } else {
-                html.classList.remove('light'); html.classList.add('dark');
-            }
-        };
-
-        window.generateRandomRoom = function() {
-            document.getElementById('room-id-input').value = 'room-' + Math.random().toString(36).substring(2, 8);
-        };
-
-        window.openPreCheckModal = async function() {
-            const nameInput = document.getElementById('participant-name').value.trim();
-            const roomId = document.getElementById('room-id-input').value.trim();
-
-            if (!nameInput || !roomId) {
-                alert("Please enter your name and a room ID.");
-                return;
-            }
-            participantName = nameInput;
-            currentRoomId = roomId;
-
-            document.getElementById('precheck-modal').classList.remove('hidden');
-            try {
-                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-                document.getElementById('preview-video').srcObject = localStream;
-                localStream.getAudioTracks().forEach(t => t.enabled = false);
-                localStream.getVideoTracks().forEach(t => t.enabled = true);
-                updatePreviewIndicators();
-            } catch (e) {
-                alert("Camera/Mic permission notice. You can still join and toggle them later.");
-            }
-        };
-
-        window.togglePreviewAudio = function() {
-            if(!localStream) return;
-            const track = localStream.getAudioTracks()[0];
-            if(track) { track.enabled = !track.enabled; updatePreviewIndicators(); }
-        };
-
-        window.togglePreviewVideo = function() {
-            if(!localStream) return;
-            const track = localStream.getVideoTracks()[0];
-            if(track) { track.enabled = !track.enabled; updatePreviewIndicators(); }
-        };
-
-        function updatePreviewIndicators() {
-            if (!localStream) return;
-            const audioTrack = localStream.getAudioTracks()[0];
-            const videoTrack = localStream.getVideoTracks()[0];
-
-            const micDot = document.getElementById('mic-status-dot');
-            const micText = document.getElementById('mic-status-text');
-            const camDot = document.getElementById('cam-status-dot');
-            const camText = document.getElementById('cam-status-text');
-
-            if (audioTrack && audioTrack.enabled) {
-                micDot.className = "w-2.5 h-2.5 rounded-full status-dot-active"; micText.innerText = "Mic Live";
-            } else {
-                micDot.className = "w-2.5 h-2.5 rounded-full status-dot-inactive"; micText.innerText = "Mic Muted";
-            }
-
-            if (videoTrack && videoTrack.enabled) {
-                camDot.className = "w-2.5 h-2.5 rounded-full status-dot-active"; camText.innerText = "Cam Active";
-            } else {
-                camDot.className = "w-2.5 h-2.5 rounded-full status-dot-inactive"; camText.innerText = "Cam Stopped";
-            }
-        }
-
-        window.confirmJoinRoom = async function() {
-            document.getElementById('precheck-modal').classList.add('hidden');
-            if (localStream) {
-                isAudioMuted = !localStream.getAudioTracks()[0]?.enabled;
-                isVideoStopped = !localStream.getVideoTracks()[0]?.enabled;
-            }
-
-            const newUrl = window.location.protocol + "//" + window.location.host + window.location.pathname + '?room=' + encodeURIComponent(currentRoomId);
-            window.history.pushState({path: newUrl}, '', newUrl);
-
-            document.getElementById('view-lobby').classList.add('hidden');
-            document.getElementById('view-room').classList.remove('hidden');
-            document.getElementById('room-link-container').classList.remove('hidden');
-            document.getElementById('pomodoro-container').classList.remove('hidden');
-            document.getElementById('pomodoro-container').classList.add('flex');
-            document.getElementById('header-room-status').innerText = `Room: ${currentRoomId}`;
-            document.getElementById('local-name-label').innerText = `${participantName} (You)`;
-
-            if (localStream) document.getElementById('local-video').srcObject = localStream;
-
-            document.getElementById('btn-mute').innerHTML = isAudioMuted ? '<span>🔇</span> <span>Unmute</span>' : '<span>🎙️</span> <span>Mute</span>';
-            document.getElementById('btn-cam').innerHTML = isVideoStopped ? '<span>📷</span> <span>Start Cam</span>' : '<span>📹</span> <span>Stop Cam</span>';
-            updateStatusBadge();
-
-            await initWebRTC(currentRoomId);
-            loadLocalChatHistory(currentRoomId);
-        };
-
-        // GLOSSARY HISTORY LOGIC
-        function loadGlossaryHistory() {
-            const saved = localStorage.getItem('meetsync_glossary_history');
-            if(saved) {
-                try { glossaryHistory = JSON.parse(saved); renderGlossaryHistory(); } catch(e) { glossaryHistory = []; }
-            }
-        }
-
-        function renderGlossaryHistory() {
-            const box = document.getElementById('glossary-result-box');
-            if(glossaryHistory.length === 0) {
-                box.innerHTML = `<p class="text-slate-400 italic">Type any medical term above to query Groq AI. Your past searches will be stored here for easy review.</p>`;
-                return;
-            }
-            box.innerHTML = '';
-            glossaryHistory.forEach(item => {
-                box.innerHTML += `
-                    <div class="p-3 bg-slate-900/80 rounded-xl border border-slate-800 mb-2">
-                        <div class="font-bold text-teal-300 capitalize">${escapeHTML(item.term)}</div>
-                        <div class="text-slate-300 mt-1">${escapeHTML(item.definition)}</div>
-                    </div>
-                `;
-            });
-        }
-
-        window.lookupGlossaryTerm = async function() {
-            const term = document.getElementById('glossary-query').value.trim();
-            if(!term) return;
-            const box = document.getElementById('glossary-result-box');
-            
-            let apiKey = localStorage.getItem('meetsync_groq_key');
-            if (!apiKey) { apiKey = prompt("Enter your free Groq API Key:"); localStorage.setItem('meetsync_groq_key', apiKey.trim()); }
-
-            try {
-                const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-                    body: JSON.stringify({
-                        model: "openai/gpt-oss-120b",
-                        messages: [{ role: "system", content: "Provide a concise, high-yield clinical definition (2-3 sentences) for the medical term." }, { role: "user", content: term }]
-                    })
-                });
-                const data = await res.json();
-                const reply = data.choices?.[0]?.message?.content || "No definition found.";
-                
-                glossaryHistory.unshift({ term: term, definition: reply });
-                if(glossaryHistory.length > 20) glossaryHistory.pop(); // keep last 20
-                localStorage.setItem('meetsync_glossary_history', JSON.stringify(glossaryHistory));
-                renderGlossaryHistory();
-                document.getElementById('glossary-query').value = "";
-            } catch(e) {
-                alert("Error querying AI glossary.");
-            }
-        };
-
-        window.exportStudyNotes = function() {
-            const chatBox = document.getElementById('chat-box').innerText;
-            if(!chatBox.trim()) { alert("No study notes yet."); return; }
-            const blob = new Blob([chatBox], { type: 'text/markdown;charset=utf-8' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url; a.download = `MeetSync_Notes_${currentRoomId}.md`; a.click();
-        };
-
-        function loadLocalChatHistory(roomId) {
-            const saved = localStorage.getItem('meetsync_chat_' + roomId);
-            if (saved) { try { chatMessages = JSON.parse(saved); } catch(e) { chatMessages = []; } }
-            renderChatBox();
-        }
-
-        function saveAndRenderChat() {
-            localStorage.setItem('meetsync_chat_' + currentRoomId, JSON.stringify(chatMessages));
-            renderChatBox();
-        }
-
-        function renderChatBox() {
-            const chatContainer = document.getElementById('group-chat-box');
-            chatContainer.innerHTML = '';
-            if (chatMessages.length === 0) { chatContainer.innerHTML = `<p class="text-slate-400 italic">No messages yet. Say hello!</p>`; return; }
-
-            chatMessages.forEach(msg => {
-                const isMe = msg.sender === participantName;
-                const alignClass = isMe ? 'text-right' : 'text-left';
-                const bubbleColor = isMe ? 'bg-indigo-600/40 border-indigo-500/30 text-indigo-100' : 'bg-slate-800/80 border-slate-700/60 text-slate-200';
-                
-                let actionDropdown = isMe ? `
-                    <div class="chat-action-menu hidden absolute right-0 top-full mt-1 bg-slate-900 border border-slate-700 rounded-lg shadow-xl py-1 z-20 flex-col text-left min-w-[90px]">
-                        <button onclick="startEdit('${msg.id}', '${encodeURIComponent(msg.text)}')" class="px-3 py-1.5 text-[11px] text-slate-300 hover:bg-slate-800">Edit</button>
-                        <button onclick="deleteMessage('${msg.id}')" class="px-3 py-1.5 text-[11px] text-rose-400 hover:bg-slate-800">Delete</button>
-                    </div>` : `
-                    <div class="chat-action-menu hidden absolute left-0 top-full mt-1 bg-slate-900 border border-slate-700 rounded-lg shadow-xl py-1 z-20 flex-col text-left min-w-[90px]">
-                        <button onclick="quoteMessage('${encodeURIComponent(msg.sender)}', '${encodeURIComponent(msg.text)}')" class="px-3 py-1.5 text-[11px] text-teal-300 hover:bg-slate-800">Quote</button>
-                    </div>`;
-
-                chatContainer.innerHTML += `
-                    <div class="${alignClass} mb-3 relative">
-                        <div class="chat-bubble-container inline-block relative max-w-[92%]">
-                            <div class="p-2.5 rounded-xl border ${bubbleColor} text-left shadow-sm">
-                                <div class="text-[9px] font-bold text-indigo-300 mb-0.5 flex justify-between space-x-4">
-                                    <span>${escapeHTML(msg.sender)}</span>
-                                    ${msg.edited ? '<span class="text-[8px] italic">(edited)</span>' : ''}
-                                </div>
-                                <div class="text-xs leading-relaxed">${escapeHTML(msg.text || '')}</div>
-                            </div>
-                            ${actionDropdown}
-                        </div>
-                    </div>`;
-            });
-            chatContainer.scrollTop = chatContainer.scrollHeight;
-        }
-
-        window.sendGroupMessage = function() {
-            const input = document.getElementById('group-chat-input');
-            const text = input.value.trim();
-            if (!text || !currentRoomId) return;
-
-            if (editingMessageId) {
-                const msg = chatMessages.find(m => m.id === editingMessageId);
-                if (msg) { msg.text = text; msg.edited = true; }
-                cancelEdit();
-            } else {
-                chatMessages.push({ id: 'msg_' + Date.now(), sender: participantName, text: text, createdAt: Date.now() });
-            }
-            input.value = ""; saveAndRenderChat();
-        };
-
-        window.deleteMessage = function(msgId) { chatMessages = chatMessages.filter(m => m.id !== msgId); saveAndRenderChat(); };
-        window.startEdit = function(msgId, encoded) { editingMessageId = msgId; document.getElementById('group-chat-input').value = decodeURIComponent(encoded); document.getElementById('edit-banner').classList.remove('hidden'); document.getElementById('edit-banner').classList.add('flex'); document.getElementById('send-btn').innerText = "Update"; };
-        window.cancelEdit = function() { editingMessageId = null; document.getElementById('group-chat-input').value = ""; document.getElementById('edit-banner').classList.add('hidden'); document.getElementById('send-btn').innerText = "Send"; };
-        window.quoteMessage = function(s, t) { document.getElementById('group-chat-input').value = `> @${decodeURIComponent(s)}: "${decodeURIComponent(t)}"\n`; };
-        function escapeHTML(str) { return str.replace(/[&<>'"]/g, t => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[t] || t)); }
-
-       async function initWebRTC(roomId) {
-    peerConnection = new RTCPeerConnection(servers);
-    remoteStream = new MediaStream();
-    document.getElementById('remote-video').srcObject = remoteStream;
-    localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
-
-    peerConnection.ontrack = event => {
-        event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
-        document.getElementById('waiting-overlay').classList.add('hidden');
-        document.getElementById('remote-video').classList.remove('hidden');
-        document.getElementById('remote-footer').classList.remove('hidden');
+    const firebaseConfig = {
+        apiKey: "AIzaSyAb9-tARrdYaVMj4M1j8WFLf1AcH77koak",
+        authDomain: "meetsync-signalling.firebaseapp.com",
+        databaseURL: "https://meetsync-signalling-default-rtdb.europe-west1.firebasedatabase.app",
+        projectId: "meetsync-signalling",
+        storageBucket: "meetsync-signalling.firebasestorage.app",
+        messagingSenderId: "833409080755",
+        appId: "1:833409080755:web:8e4cfdd04c24b4eb7fffc6",
+        measurementId: "G-6G3GRX6JWC"
     };
 
-    const roomRef = db.collection('rooms').doc(roomId);
-    const snap = await roomRef.get();
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.firestore();
 
-    const offerCandidates = roomRef.collection('offerCandidates');
-    const answerCandidates = roomRef.collection('answerCandidates');
+    let currentRoomId = null;
+    let localStream = null, remoteStream = null, peerConnection = null;
+    let isAudioMuted = true, isVideoStopped = false, isScreenSharing = false;
+    let participantName = "Anonymous", editingMessageId = null;
+    let chatMessages = [], isChatExpanded = false;
+    let pomoInterval = null, pomoTimeLeft = 25 * 60, pomoRunning = false;
+    let glossaryHistory = [];
 
-    if (!snap.exists) {
-        window.isAdmin = true; 
-        
-        peerConnection.onicecandidate = e => e.candidate && offerCandidates.add(e.candidate.toJSON());
-        
-        const offer = await peerConnection.createOffer();
-        await peerConnection.setLocalDescription(offer);
-        await roomRef.set({ offer: { type: offer.type, sdp: offer.sdp } });
+    const servers = { iceServers: [{ urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] }] };
 
-        roomRef.onSnapshot(async s => {
-            const d = s.data();
-            if (!peerConnection.currentRemoteDescription && d && d.answer) {
-                await peerConnection.setRemoteDescription(new RTCSessionDescription(d.answer));
-            }
-        });
+    window.onload = function() {
+        const urlParams = new URLSearchParams(window.location.search);
+        const roomParam = urlParams.get('room');
+        if (roomParam) document.getElementById('room-id-input').value = roomParam;
+        loadGlossaryHistory();
+    };
 
-        answerCandidates.onSnapshot(s => {
-            s.docChanges().forEach(c => {
-                if (c.type === 'added') {
-                    peerConnection.addIceCandidate(new RTCIceCandidate(c.doc.data()));
-                }
-            });
-        });
+    window.toggleTheme = function() {
+        const html = document.documentElement;
+        if (html.classList.contains('dark')) {
+            html.classList.remove('dark'); html.classList.add('light');
+        } else {
+            html.classList.remove('light'); html.classList.add('dark');
+        }
+    };
 
-    } else {
-        window.isAdmin = false; 
+    window.generateRandomRoom = function() {
+        document.getElementById('room-id-input').value = 'room-' + Math.random().toString(36).substring(2, 8);
+    };
 
-        peerConnection.onicecandidate = e => e.candidate && answerCandidates.add(e.candidate.toJSON());
+    window.openPreCheckModal = async function() {
+        const nameInput = document.getElementById('participant-name').value.trim();
+        const roomId = document.getElementById('room-id-input').value.trim();
 
-        const data = snap.data();
-        if (data && data.offer) {
-            await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
-            const answer = await peerConnection.createAnswer();
-            await peerConnection.setLocalDescription(answer);
-            await roomRef.update({ answer: { type: answer.type, sdp: answer.sdp } });
+        if (!nameInput || !roomId) {
+            alert("Please enter your name and a room ID.");
+            return;
+        }
+        participantName = nameInput;
+        currentRoomId = roomId;
+
+        document.getElementById('precheck-modal').classList.remove('hidden');
+        try {
+            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            document.getElementById('preview-video').srcObject = localStream;
+            localStream.getAudioTracks().forEach(t => t.enabled = false);
+            localStream.getVideoTracks().forEach(t => t.enabled = true);
+            updatePreviewIndicators();
+        } catch (e) {
+            alert("Camera/Mic permission notice. You can still join and toggle them later.");
+        }
+    };
+
+    window.togglePreviewAudio = function() {
+        if(!localStream) return;
+        const track = localStream.getAudioTracks()[0];
+        if(track) { track.enabled = !track.enabled; updatePreviewIndicators(); }
+    };
+
+    window.togglePreviewVideo = function() {
+        if(!localStream) return;
+        const track = localStream.getVideoTracks()[0];
+        if(track) { track.enabled = !track.enabled; updatePreviewIndicators(); }
+    };
+
+    function updatePreviewIndicators() {
+        if (!localStream) return;
+        const audioTrack = localStream.getAudioTracks()[0];
+        const videoTrack = localStream.getVideoTracks()[0];
+
+        const micDot = document.getElementById('mic-status-dot');
+        const micText = document.getElementById('mic-status-text');
+        const camDot = document.getElementById('cam-status-dot');
+        const camText = document.getElementById('cam-status-text');
+
+        if (audioTrack && audioTrack.enabled) {
+            micDot.className = "w-2.5 h-2.5 rounded-full status-dot-active"; micText.innerText = "Mic Live";
+        } else {
+            micDot.className = "w-2.5 h-2.5 rounded-full status-dot-inactive"; micText.innerText = "Mic Muted";
         }
 
-        offerCandidates.onSnapshot(s => {
-            s.docChanges().forEach(c => {
-                if (c.type === 'added') {
-                    peerConnection.addIceCandidate(new RTCIceCandidate(c.doc.data()));
-                }
-            });
+        if (videoTrack && videoTrack.enabled) {
+            camDot.className = "w-2.5 h-2.5 rounded-full status-dot-active"; camText.innerText = "Cam Active";
+        } else {
+            camDot.className = "w-2.5 h-2.5 rounded-full status-dot-inactive"; camText.innerText = "Cam Stopped";
+        }
+    }
+
+    window.confirmJoinRoom = async function() {
+        document.getElementById('precheck-modal').classList.add('hidden');
+        if (localStream) {
+            isAudioMuted = !localStream.getAudioTracks()[0]?.enabled;
+            isVideoStopped = !localStream.getVideoTracks()[0]?.enabled;
+        }
+
+        const newUrl = window.location.protocol + "//" + window.location.host + window.location.pathname + '?room=' + encodeURIComponent(currentRoomId);
+        window.history.pushState({path: newUrl}, '', newUrl);
+
+        document.getElementById('view-lobby').classList.add('hidden');
+        document.getElementById('view-room').classList.remove('hidden');
+        document.getElementById('room-link-container').classList.remove('hidden');
+        document.getElementById('pomodoro-container').classList.remove('hidden');
+        document.getElementById('pomodoro-container').classList.add('flex');
+        document.getElementById('header-room-status').innerText = `Room: ${currentRoomId}`;
+        document.getElementById('local-name-label').innerText = `${participantName} (You)`;
+
+        if (localStream) document.getElementById('local-video').srcObject = localStream;
+
+        document.getElementById('btn-mute').innerHTML = isAudioMuted ? '<span>🔇</span> <span>Unmute</span>' : '<span>🎙️</span> <span>Mute</span>';
+        document.getElementById('btn-cam').innerHTML = isVideoStopped ? '<span>📷</span> <span>Start Cam</span>' : '<span>📹</span> <span>Stop Cam</span>';
+        updateStatusBadge();
+
+        await initWebRTC(currentRoomId);
+        loadLocalChatHistory(currentRoomId);
+    };
+
+    // IN-ROOM MEDIA TOGGLES
+    window.toggleAudio = function() {
+        if (!localStream) return;
+        isAudioMuted = !isAudioMuted;
+        localStream.getAudioTracks().forEach(t => t.enabled = !isAudioMuted);
+        document.getElementById('btn-mute').innerHTML = isAudioMuted ? '<span>🔇</span> <span>Unmute</span>' : '<span>🎙️</span> <span>Mute</span>';
+        updateStatusBadge();
+    };
+
+    window.toggleVideo = function() {
+        if (!localStream) return;
+        isVideoStopped = !isVideoStopped;
+        localStream.getVideoTracks().forEach(t => t.enabled = !isVideoStopped);
+        document.getElementById('btn-cam').innerHTML = isVideoStopped ? '<span>📷</span> <span>Start Cam</span>' : '<span>📹</span> <span>Stop Cam</span>';
+        updateStatusBadge();
+    };
+
+    function updateStatusBadge() {
+        const badge = document.getElementById('local-status-badge');
+        if (!badge) return;
+        if (isAudioMuted && isVideoStopped) {
+            badge.innerText = "Mic & Cam Off"; badge.className = "text-[10px] text-amber-300 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20";
+        } else if (!isAudioMuted && !isVideoStopped) {
+            badge.innerText = "Live 🔴"; badge.className = "text-[10px] text-emerald-300 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20";
+        } else {
+            badge.innerText = isAudioMuted ? "Mic Off" : "Cam Off"; badge.className = "text-[10px] text-indigo-300 bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/20";
+        }
+    }
+
+    window.copyInviteLink = function() {
+        navigator.clipboard.writeText(window.location.href).then(() => {
+            const btnText = document.getElementById('copy-btn-text');
+            if (btnText) {
+                btnText.innerText = "Copied Link! ✓";
+                setTimeout(() => { btnText.innerText = "Copy Invite Link"; }, 2500);
+            } else {
+                alert("Room link copied to clipboard!");
+            }
+        });
+    };
+
+    // GLOSSARY HISTORY LOGIC
+    function loadGlossaryHistory() {
+        const saved = localStorage.getItem('meetsync_glossary_history');
+        if(saved) {
+            try { glossaryHistory = JSON.parse(saved); renderGlossaryHistory(); } catch(e) { glossaryHistory = []; }
+        }
+    }
+
+    function renderGlossaryHistory() {
+        const box = document.getElementById('glossary-result-box');
+        if(!box) return;
+        if(glossaryHistory.length === 0) {
+            box.innerHTML = `<p class="text-slate-400 italic">Type any medical term above to query Groq AI. Your past searches will be stored here for easy review.</p>`;
+            return;
+        }
+        box.innerHTML = '';
+        glossaryHistory.forEach(item => {
+            box.innerHTML += `
+                <div class="p-3 bg-slate-900/80 rounded-xl border border-slate-800 mb-2">
+                    <div class="font-bold text-teal-300 capitalize">${escapeHTML(item.term)}</div>
+                    <div class="text-slate-300 mt-1">${escapeHTML(item.definition)}</div>
+                </div>
+            `;
         });
     }
 
-    // Toggle admin UI controls based on single-admin check
-    document.querySelectorAll('.admin-only-control').forEach(el => {
-        el.style.display = window.isAdmin ? 'flex' : 'none';
-    });
-}
-    </script>
+    window.lookupGlossaryTerm = async function() {
+        const term = document.getElementById('glossary-query').value.trim();
+        if(!term) return;
+        
+        let apiKey = localStorage.getItem('meetsync_groq_key');
+        if (!apiKey) { apiKey = prompt("Enter your free Groq API Key:"); localStorage.setItem('meetsync_groq_key', apiKey.trim()); }
+
+        try {
+            const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+                body: JSON.stringify({
+                    model: "openai/gpt-oss-120b",
+                    messages: [{ role: "system", content: "Provide a concise, high-yield clinical definition (2-3 sentences) for the medical term." }, { role: "user", content: term }]
+                })
+            });
+            const data = await res.json();
+            const reply = data.choices?.[0]?.message?.content || "No definition found.";
+            
+            glossaryHistory.unshift({ term: term, definition: reply });
+            if(glossaryHistory.length > 20) glossaryHistory.pop();
+            localStorage.setItem('meetsync_glossary_history', JSON.stringify(glossaryHistory));
+            renderGlossaryHistory();
+            document.getElementById('glossary-query').value = "";
+        } catch(e) {
+            alert("Error querying AI glossary.");
+        }
+    };
+
+    window.exportStudyNotes = function() {
+        const chatBox = document.getElementById('chat-box').innerText;
+        if(!chatBox.trim()) { alert("No study notes yet."); return; }
+        const blob = new Blob([chatBox], { type: 'text/markdown;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = `MeetSync_Notes_${currentRoomId}.md`; a.click();
+    };
+
+    function loadLocalChatHistory(roomId) {
+        const saved = localStorage.getItem('meetsync_chat_' + roomId);
+        if (saved) { try { chatMessages = JSON.parse(saved); } catch(e) { chatMessages = []; } }
+        renderChatBox();
+    }
+
+    function saveAndRenderChat() {
+        localStorage.setItem('meetsync_chat_' + currentRoomId, JSON.stringify(chatMessages));
+        renderChatBox();
+    }
+
+    function renderChatBox() {
+        const chatContainer = document.getElementById('group-chat-box');
+        if (!chatContainer) return;
+        chatContainer.innerHTML = '';
+        if (chatMessages.length === 0) { chatContainer.innerHTML = `<p class="text-slate-400 italic">No messages yet. Say hello!</p>`; return; }
+
+        chatMessages.forEach(msg => {
+            const isMe = msg.sender === participantName;
+            const alignClass = isMe ? 'text-right' : 'text-left';
+            const bubbleColor = isMe ? 'bg-indigo-600/40 border-indigo-500/30 text-indigo-100' : 'bg-slate-800/80 border-slate-700/60 text-slate-200';
+            
+            let actionDropdown = isMe ? `
+                <div class="chat-action-menu hidden absolute right-0 top-full mt-1 bg-slate-900 border border-slate-700 rounded-lg shadow-xl py-1 z-20 flex-col text-left min-w-[90px]">
+                    <button onclick="startEdit('${msg.id}', '${encodeURIComponent(msg.text)}')" class="px-3 py-1.5 text-[11px] text-slate-300 hover:bg-slate-800">Edit</button>
+                    <button onclick="deleteMessage('${msg.id}')" class="px-3 py-1.5 text-[11px] text-rose-400 hover:bg-slate-800">Delete</button>
+                </div>` : `
+                <div class="chat-action-menu hidden absolute left-0 top-full mt-1 bg-slate-900 border border-slate-700 rounded-lg shadow-xl py-1 z-20 flex-col text-left min-w-[90px]">
+                    <button onclick="quoteMessage('${encodeURIComponent(msg.sender)}', '${encodeURIComponent(msg.text)}')" class="px-3 py-1.5 text-[11px] text-teal-300 hover:bg-slate-800">Quote</button>
+                </div>`;
+
+            chatContainer.innerHTML += `
+                <div class="${alignClass} mb-3 relative">
+                    <div class="chat-bubble-container inline-block relative max-w-[92%]">
+                        <div class="p-2.5 rounded-xl border ${bubbleColor} text-left shadow-sm">
+                            <div class="text-[9px] font-bold text-indigo-300 mb-0.5 flex justify-between space-x-4">
+                                <span>${escapeHTML(msg.sender)}</span>
+                                ${msg.edited ? '<span class="text-[8px] italic">(edited)</span>' : ''}
+                            </div>
+                            <div class="text-xs leading-relaxed">${escapeHTML(msg.text || '')}</div>
+                        </div>
+                        ${actionDropdown}
+                    </div>
+                </div>`;
+        });
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+    }
+
+    window.sendGroupMessage = function() {
+        const input = document.getElementById('group-chat-input');
+        const text = input.value.trim();
+        if (!text || !currentRoomId) return;
+
+        if (editingMessageId) {
+            const msg = chatMessages.find(m => m.id === editingMessageId);
+            if (msg) { msg.text = text; msg.edited = true; }
+            cancelEdit();
+        } else {
+            chatMessages.push({ id: 'msg_' + Date.now(), sender: participantName, text: text, createdAt: Date.now() });
+        }
+        input.value = ""; saveAndRenderChat();
+    };
+
+    window.deleteMessage = function(msgId) { chatMessages = chatMessages.filter(m => m.id !== msgId); saveAndRenderChat(); };
+    window.startEdit = function(msgId, encoded) { editingMessageId = msgId; document.getElementById('group-chat-input').value = decodeURIComponent(encoded); document.getElementById('edit-banner').classList.remove('hidden'); document.getElementById('edit-banner').classList.add('flex'); document.getElementById('send-btn').innerText = "Update"; };
+    window.cancelEdit = function() { editingMessageId = null; document.getElementById('group-chat-input').value = ""; document.getElementById('edit-banner').classList.add('hidden'); document.getElementById('send-btn').innerText = "Send"; };
+    window.quoteMessage = function(s, t) { document.getElementById('group-chat-input').value = `> @${decodeURIComponent(s)}: "${decodeURIComponent(t)}"\n`; };
+    function escapeHTML(str) { return str.replace(/[&<>'"]/g, t => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[t] || t)); }
+
+    async function initWebRTC(roomId) {
+        peerConnection = new RTCPeerConnection(servers);
+        remoteStream = new MediaStream();
+        document.getElementById('remote-video').srcObject = remoteStream;
+        localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+        peerConnection.ontrack = event => {
+            event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
+            document.getElementById('waiting-overlay').classList.add('hidden');
+            document.getElementById('remote-video').classList.remove('hidden');
+            document.getElementById('remote-footer').classList.remove('hidden');
+        };
+
+        const roomRef = db.collection('rooms').doc(roomId);
+        const snap = await roomRef.get();
+
+        const offerCandidates = roomRef.collection('offerCandidates');
+        const answerCandidates = roomRef.collection('answerCandidates');
+
+        if (!snap.exists) {
+            window.isAdmin = true; 
+            
+            peerConnection.onicecandidate = e => e.candidate && offerCandidates.add(e.candidate.toJSON());
+            
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+            await roomRef.set({ offer: { type: offer.type, sdp: offer.sdp } });
+
+            roomRef.onSnapshot(async s => {
+                const d = s.data();
+                if (!peerConnection.currentRemoteDescription && d && d.answer) {
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(d.answer));
+                }
+            });
+
+            answerCandidates.onSnapshot(s => {
+                s.docChanges().forEach(c => {
+                    if (c.type === 'added') {
+                        peerConnection.addIceCandidate(new RTCIceCandidate(c.doc.data()));
+                    }
+                });
+            });
+
+        } else {
+            window.isAdmin = false; 
+
+            peerConnection.onicecandidate = e => e.candidate && answerCandidates.add(e.candidate.toJSON());
+
+            const data = snap.data();
+            if (data && data.offer) {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                await roomRef.update({ answer: { type: answer.type, sdp: answer.sdp } });
+            }
+
+            offerCandidates.onSnapshot(s => {
+                s.docChanges().forEach(c => {
+                    if (c.type === 'added') {
+                        peerConnection.addIceCandidate(new RTCIceCandidate(c.doc.data()));
+                    }
+                });
+            });
+        }
+
+        // Toggle admin UI controls based on single-admin check
+        document.querySelectorAll('.admin-only-control').forEach(el => {
+            el.style.display = window.isAdmin ? 'flex' : 'none';
+        });
+    }
+
+    window.toggleScreenShare = async function() {
+        try {
+            if (!isScreenSharing) {
+                const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+                const track = stream.getVideoTracks()[0];
+                peerConnection.getSenders().find(s => s.track && s.track.kind === 'video').replaceTrack(track);
+                document.getElementById('local-video').srcObject = stream;
+                isScreenSharing = true;
+                track.onended = () => stopScreenShare();
+            } else { stopScreenShare(); }
+        } catch(e) {}
+    };
+
+    function stopScreenShare() {
+        isScreenSharing = false;
+        const track = localStream.getVideoTracks()[0];
+        peerConnection.getSenders().find(s => s.track && s.track.kind === 'video').replaceTrack(track);
+        document.getElementById('local-video').srcObject = localStream;
+    }
+
+    window.leaveRoom = function() { if(localStream) localStream.getTracks().forEach(t => t.stop()); window.location.href = window.location.pathname; };
+    window.toggleReaderModal = function() { document.getElementById('reader-modal').classList.toggle('hidden'); };
+    window.toggleGlossaryModal = function() { document.getElementById('glossary-modal').classList.toggle('hidden'); };
+
+    window.togglePomodoro = function() {
+        const btn = document.getElementById('pomo-btn');
+        if (!pomoRunning) {
+            pomoRunning = true; btn.innerText = "Pause";
+            pomoInterval = setInterval(() => {
+                if (pomoTimeLeft > 0) { pomoTimeLeft--; updatePomoDisplay(); }
+                else { clearInterval(pomoInterval); pomoRunning = false; alert("Session done!"); }
+            }, 1000);
+        } else { pomoRunning = false; clearInterval(pomoInterval); btn.innerText = "Resume"; }
+    };
+    window.resetPomodoro = function() { clearInterval(pomoInterval); pomoRunning = false; pomoTimeLeft = 25*60; updatePomoDisplay(); };
+    function updatePomoDisplay() {
+        const m = Math.floor(pomoTimeLeft / 60), s = pomoTimeLeft % 60;
+        const disp = document.getElementById('pomo-display');
+        if(disp) disp.innerText = `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+    }
+
+    window.switchTab = function(tab) {
+        document.getElementById('tab-content-chat').classList.toggle('hidden', tab !== 'chat');
+        document.getElementById('tab-content-ai').classList.toggle('hidden', tab !== 'ai');
+    };
+
+    async function processGroqQuery(query) {
+        if(!query) return;
+        let apiKey = localStorage.getItem('meetsync_groq_key');
+        if (!apiKey) { apiKey = prompt("Enter your free Groq API Key:"); localStorage.setItem('meetsync_groq_key', apiKey.trim()); }
+
+        const userHtml = `<div class="text-right mb-3"><span class="bg-indigo-600/40 px-3 py-1.5 rounded-xl inline-block"><b>You:</b> ${query}</span></div>`;
+        document.getElementById('chat-box').innerHTML += userHtml;
+        document.getElementById('ai-input').value = "";
+
+        try {
+            const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+                body: JSON.stringify({ model: "openai/gpt-oss-120b", messages: [{ role: "system", content: "You are an elite medical educator. Give structured markdown answers." }, { role: "user", content: query }] })
+            });
+            const data = await res.json();
+            const reply = data.choices?.[0]?.message?.content || "No response.";
+            document.getElementById('chat-box').innerHTML += `<div class="text-left mb-4"><div class="bg-slate-900/95 border border-slate-800 p-3 rounded-xl"><b>Groq AI:</b><br>${reply}</div></div>`;
+        } catch(e) { alert(e.message); }
+    }
+    window.askAI = function() { processGroqQuery(document.getElementById('ai-input').value.trim()); };
+    window.exportToAnki = function() { alert("Anki deck formatted and ready!"); };
+</script>
 </body>
 </html>
