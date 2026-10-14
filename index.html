@@ -286,8 +286,7 @@
         </div>
     </div>
 
-    <!-- JAVASCRIPT ENGINE -->
-    <script>
+   <script>
     const firebaseConfig = {
         apiKey: "AIzaSyAb9-tARrdYaVMj4M1j8WFLf1AcH77koak",
         authDomain: "meetsync-signalling.firebaseapp.com",
@@ -307,6 +306,7 @@
     let isAudioMuted = true, isVideoStopped = false, isScreenSharing = false;
     let participantName = "Anonymous", editingMessageId = null;
     let chatMessages = [], isChatExpanded = false;
+    let chatUnsubscribe = null;
     let pomoInterval = null, pomoTimeLeft = 25 * 60, pomoRunning = false;
     let glossaryHistory = [];
 
@@ -415,7 +415,7 @@
         updateStatusBadge();
 
         await initWebRTC(currentRoomId);
-        loadLocalChatHistory(currentRoomId);
+        initFirestoreChat(currentRoomId);
     };
 
     // IN-ROOM MEDIA TOGGLES
@@ -523,15 +523,18 @@
         a.href = url; a.download = `MeetSync_Notes_${currentRoomId}.md`; a.click();
     };
 
-    function loadLocalChatHistory(roomId) {
-        const saved = localStorage.getItem('meetsync_chat_' + roomId);
-        if (saved) { try { chatMessages = JSON.parse(saved); } catch(e) { chatMessages = []; } }
-        renderChatBox();
-    }
+    // FIRESTORE REAL-TIME CHAT SYNC
+    function initFirestoreChat(roomId) {
+        const messagesRef = db.collection('rooms').doc(roomId).collection('messages');
+        if (chatUnsubscribe) chatUnsubscribe();
 
-    function saveAndRenderChat() {
-        localStorage.setItem('meetsync_chat_' + currentRoomId, JSON.stringify(chatMessages));
-        renderChatBox();
+        chatUnsubscribe = messagesRef.orderBy('createdAt', 'asc').onSnapshot(snapshot => {
+            chatMessages = [];
+            snapshot.forEach(doc => {
+                chatMessages.push({ id: doc.id, ...doc.data() });
+            });
+            renderChatBox();
+        });
     }
 
     function renderChatBox() {
@@ -547,7 +550,6 @@
             
             let actionDropdown = isMe ? `
                 <div class="chat-action-menu hidden absolute right-0 top-full mt-1 bg-slate-900 border border-slate-700 rounded-lg shadow-xl py-1 z-20 flex-col text-left min-w-[90px]">
-                    <button onclick="startEdit('${msg.id}', '${encodeURIComponent(msg.text)}')" class="px-3 py-1.5 text-[11px] text-slate-300 hover:bg-slate-800">Edit</button>
                     <button onclick="deleteMessage('${msg.id}')" class="px-3 py-1.5 text-[11px] text-rose-400 hover:bg-slate-800">Delete</button>
                 </div>` : `
                 <div class="chat-action-menu hidden absolute left-0 top-full mt-1 bg-slate-900 border border-slate-700 rounded-lg shadow-xl py-1 z-20 flex-col text-left min-w-[90px]">
@@ -571,45 +573,47 @@
         chatContainer.scrollTop = chatContainer.scrollHeight;
     }
 
-    window.sendGroupMessage = function() {
+    window.sendGroupMessage = async function() {
         const input = document.getElementById('group-chat-input');
         const text = input.value.trim();
         if (!text || !currentRoomId) return;
 
-        if (editingMessageId) {
-            const msg = chatMessages.find(m => m.id === editingMessageId);
-            if (msg) { msg.text = text; msg.edited = true; }
-            cancelEdit();
-        } else {
-            chatMessages.push({ id: 'msg_' + Date.now(), sender: participantName, text: text, createdAt: Date.now() });
-        }
-        input.value = ""; saveAndRenderChat();
+        const messagesRef = db.collection('rooms').doc(currentRoomId).collection('messages');
+        await messagesRef.add({
+            sender: participantName,
+            text: text,
+            createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+            edited: false
+        });
+        input.value = "";
     };
 
-    window.deleteMessage = function(msgId) { chatMessages = chatMessages.filter(m => m.id !== msgId); saveAndRenderChat(); };
-    window.startEdit = function(msgId, encoded) { editingMessageId = msgId; document.getElementById('group-chat-input').value = decodeURIComponent(encoded); document.getElementById('edit-banner').classList.remove('hidden'); document.getElementById('edit-banner').classList.add('flex'); document.getElementById('send-btn').innerText = "Update"; };
-    window.cancelEdit = function() { editingMessageId = null; document.getElementById('group-chat-input').value = ""; document.getElementById('edit-banner').classList.add('hidden'); document.getElementById('send-btn').innerText = "Send"; };
+    window.deleteMessage = async function(msgId) {
+        if (!currentRoomId) return;
+        await db.collection('rooms').doc(currentRoomId).collection('messages').doc(msgId).delete();
+    };
+
     window.quoteMessage = function(s, t) { document.getElementById('group-chat-input').value = `> @${decodeURIComponent(s)}: "${decodeURIComponent(t)}"\n`; };
     function escapeHTML(str) { return str.replace(/[&<>'"]/g, t => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[t] || t)); }
 
     async function initWebRTC(roomId) {
-    peerConnection = new RTCPeerConnection(servers);
-    remoteStream = new MediaStream();
-    const remoteVideo = document.getElementById('remote-video');
-    if (remoteVideo) remoteVideo.srcObject = remoteStream;
+        peerConnection = new RTCPeerConnection(servers);
+        remoteStream = new MediaStream();
+        const remoteVideo = document.getElementById('remote-video');
+        if (remoteVideo) remoteVideo.srcObject = remoteStream;
 
-    // Safely add tracks only if localStream exists
-    if (localStream) {
-        localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
-    }
+        if (localStream) {
+            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+        }
 
-    peerConnection.ontrack = event => {
-        event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
-        const waitingOverlay = document.getElementById('waiting-overlay');
-        if (waitingOverlay) waitingOverlay.classList.add('hidden');
-        if (remoteVideo) remoteVideo.classList.remove('hidden');
-        const remoteFooter = document.getElementById('remote-footer');
-    }
+        peerConnection.ontrack = event => {
+            event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
+            const waitingOverlay = document.getElementById('waiting-overlay');
+            if (waitingOverlay) waitingOverlay.classList.add('hidden');
+            if (remoteVideo) remoteVideo.classList.remove('hidden');
+            const remoteFooter = document.getElementById('remote-footer');
+            if (remoteFooter) remoteFooter.classList.remove('hidden');
+        };
 
         const roomRef = db.collection('rooms').doc(roomId);
         const snap = await roomRef.get();
@@ -624,10 +628,18 @@
             
             const offer = await peerConnection.createOffer();
             await peerConnection.setLocalDescription(offer);
-            await roomRef.set({ offer: { type: offer.type, sdp: offer.sdp } });
+            
+            await roomRef.set({ 
+                offer: { type: offer.type, sdp: offer.sdp },
+                adminName: participantName 
+            });
 
             roomRef.onSnapshot(async s => {
                 const d = s.data();
+                if (d && d.participantName) {
+                    const remoteLabel = document.getElementById('remote-name-label');
+                    if (remoteLabel) remoteLabel.innerText = d.participantName;
+                }
                 if (!peerConnection.currentRemoteDescription && d && d.answer) {
                     await peerConnection.setRemoteDescription(new RTCSessionDescription(d.answer));
                 }
@@ -647,11 +659,21 @@
             peerConnection.onicecandidate = e => e.candidate && answerCandidates.add(e.candidate.toJSON());
 
             const data = snap.data();
+            
+            if (data && data.adminName) {
+                const remoteLabel = document.getElementById('remote-name-label');
+                if (remoteLabel) remoteLabel.innerText = data.adminName;
+            }
+
             if (data && data.offer) {
                 await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
                 const answer = await peerConnection.createAnswer();
                 await peerConnection.setLocalDescription(answer);
-                await roomRef.update({ answer: { type: answer.type, sdp: answer.sdp } });
+                
+                await roomRef.update({ 
+                    answer: { type: answer.type, sdp: answer.sdp },
+                    participantName: participantName 
+                });
             }
 
             offerCandidates.onSnapshot(s => {
@@ -663,7 +685,6 @@
             });
         }
 
-        // Toggle admin UI controls based on single-admin check
         document.querySelectorAll('.admin-only-control').forEach(el => {
             el.style.display = window.isAdmin ? 'flex' : 'none';
         });
@@ -703,7 +724,7 @@
             }, 1000);
         } else { pomoRunning = false; clearInterval(pomoInterval); btn.innerText = "Resume"; }
     };
-    window.resetPomodoro = function() { clearInterval(pomoInterval); pomoRunning = false; pomoTimeLeft = 25*60; updatePomoDisplay(); };
+    window.resetPomodoro = function() { clearInterval(pomoInterval); pomoRunning = false; pomoTimeLeft = 25 * 60; updatePomoDisplay(); };
     function updatePomoDisplay() {
         const m = Math.floor(pomoTimeLeft / 60), s = pomoTimeLeft % 60;
         const disp = document.getElementById('pomo-display');
