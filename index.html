@@ -745,35 +745,66 @@
         document.getElementById('tab-content-chat').classList.toggle('hidden', tab !== 'chat');
         document.getElementById('tab-content-ai').classList.toggle('hidden', tab !== 'ai');
     };
+// 
+// Quick helper to render basic Markdown formatting (bold, italic, line breaks, bullet points)
+function parseMarkdown(text) {
+    if (!text) return '';
+    return text
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") // Escape raw HTML
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')                    // **bold** -> <strong>
+        .replace(/\*(.*?)\*/g, '<em>$1</em>')                              // *italic* -> <em>
+        .replace(/^### (.*$)/gim, '<h3 class="text-sm font-bold text-teal-300 mt-2 mb-1">$1</h3>') // ### Header
+        .replace(/^## (.*$)/gim, '<h2 class="text-base font-bold text-indigo-300 mt-3 mb-1">$1</h2>') // ## Header
+        .replace(/^\* (.*$)/gim, '<li class="ml-4 list-disc text-slate-300">$1</li>') // * Bullet list
+        .replace(/\n/g, '<br>');                                            // Newlines -> <br>
+}
 
     async function processGroqQuery(query, targetBoxId = 'chat-box') {
-        if(!query) return;
-        let apiKey = localStorage.getItem('meetsync_groq_key');
-        if (!apiKey) { apiKey = prompt("Enter your free Groq API Key:"); if(apiKey) localStorage.setItem('meetsync_groq_key', apiKey.trim()); else return; }
-
-        const box = document.getElementById(targetBoxId);
-        if(box) box.innerHTML += `<div class="text-right mb-3"><span class="bg-indigo-600/40 px-3 py-1.5 rounded-xl inline-block"><b>You:</b> ${escapeHTML(query)}</span></div>`;
-        
-        if(targetBoxId === 'ai-input') document.getElementById('ai-input').value = "";
-        if(targetBoxId === 'modal-ai-input') document.getElementById('modal-ai-input').value = "";
-
-        try {
-            const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-                body: JSON.stringify({ model: "openai/gpt-oss-120b", messages: [{ role: "system", content: "You are an elite medical educator. Give structured markdown answers." }, { role: "user", content: query }] })
-            });
-            const data = await res.json();
-            const reply = data.choices?.[0]?.message?.content || "No response.";
-            if(box) {
-                box.innerHTML += `<div class="text-left mb-4"><div class="bg-slate-900/95 border border-slate-800 p-3 rounded-xl"><b>Groq AI:</b><br>${escapeHTML(reply)}</div></div>`;
-                box.scrollTop = box.scrollHeight;
-            }
-        } catch(e) { alert(e.message); }
+    if (!query) return;
+    let apiKey = localStorage.getItem('meetsync_groq_key');
+    if (!apiKey) { 
+        apiKey = prompt("Enter your free Groq API Key:"); 
+        if (apiKey) localStorage.setItem('meetsync_groq_key', apiKey.trim()); 
+        else return; 
     }
 
-    window.askAI = function() { processGroqQuery(document.getElementById('ai-input').value.trim(), 'chat-box'); };
-    window.askAIMoadal = function() { processGroqQuery(document.getElementById('modal-ai-input').value.trim(), 'modal-chat-box'); };
+    const box = document.getElementById(targetBoxId);
+    if (box) box.innerHTML += `<div class="text-right mb-3"><span class="bg-indigo-600/40 px-3 py-1.5 rounded-xl inline-block"><b>You:</b> ${escapeHTML(query)}</span></div>`;
+    
+    if (targetBoxId === 'ai-input') document.getElementById('ai-input').value = "";
+    if (targetBoxId === 'modal-ai-input') document.getElementById('modal-ai-input').value = "";
+
+    try {
+        const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+            body: JSON.stringify({ 
+                model: "openai/gpt-oss-120b", 
+                messages: [{ role: "system", content: "You are an elite medical educator. Give structured answers." }, { role: "user", content: query }] 
+            })
+        });
+        const data = await res.json();
+        const reply = data.choices?.[0]?.message?.content || "No response.";
+        
+        // Parse the markdown string into styled HTML tags
+        const formattedReply = parseMarkdown(reply);
+
+        if (box) {
+            box.innerHTML += `<div class="text-left mb-4"><div class="bg-slate-900/95 border border-slate-800 p-3.5 rounded-xl text-slate-200 leading-relaxed"><b>Groq AI:</b><br><div class="mt-1 space-y-1">${formattedReply}</div></div></div>`;
+            box.scrollTop = box.scrollHeight;
+        }
+    } catch (e) { alert(e.message); }
+}
+
+window.toggleReaderModal = function() { 
+    document.getElementById('reader-modal').classList.toggle('hidden');
+    const readerBox = document.getElementById('modal-chat-box');
+    const mainAiBox = document.getElementById('chat-box');
+    if (readerBox && mainAiBox) readerBox.innerHTML = mainAiBox.innerHTML;
+};
+
+window.askAI = function() { processGroqQuery(document.getElementById('ai-input').value.trim(), 'chat-box'); };
+window.askAIMoadal = function() { processGroqQuery(document.getElementById('modal-ai-input').value.trim(), 'modal-chat-box'); };
     window.exportToAnki = function() { alert("Anki deck formatted and ready!"); };
 </script>
 </body>
