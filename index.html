@@ -593,17 +593,23 @@
     function escapeHTML(str) { return str.replace(/[&<>'"]/g, t => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[t] || t)); }
 
     async function initWebRTC(roomId) {
-        peerConnection = new RTCPeerConnection(servers);
-        remoteStream = new MediaStream();
-        document.getElementById('remote-video').srcObject = remoteStream;
-        localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+    peerConnection = new RTCPeerConnection(servers);
+    remoteStream = new MediaStream();
+    const remoteVideo = document.getElementById('remote-video');
+    if (remoteVideo) remoteVideo.srcObject = remoteStream;
 
-        peerConnection.ontrack = event => {
-            event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
-            document.getElementById('waiting-overlay').classList.add('hidden');
-            document.getElementById('remote-video').classList.remove('hidden');
-            document.getElementById('remote-footer').classList.remove('hidden');
-        };
+    // Safely add tracks only if localStream exists
+    if (localStream) {
+        localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+    }
+
+    peerConnection.ontrack = event => {
+        event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
+        const waitingOverlay = document.getElementById('waiting-overlay');
+        if (waitingOverlay) waitingOverlay.classList.add('hidden');
+        if (remoteVideo) remoteVideo.classList.remove('hidden');
+        const remoteFooter = document.getElementById('remote-footer');
+    }
 
         const roomRef = db.collection('rooms').doc(roomId);
         const snap = await roomRef.get();
