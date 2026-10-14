@@ -178,7 +178,7 @@
                     <div id="tab-content-chat" class="flex flex-col flex-grow overflow-hidden transition-all duration-300">
                         <div class="flex justify-between items-center mb-1">
                             <span class="text-[10px] text-slate-400 font-medium">Session Chat</span>
-                              <button onclick="toggleChatExpand()" id="chat-expand-btn" class="px-2 py-0.5 rounded bg-indigo-600/20 text-indigo-300 text-[10px] font-semibold cursor-pointer border border-indigo-500/30">Expand</button>                        </div>
+<button onclick="toggleChatExpand()" id="chat-expand-btn" class="px-2 py-0.5 rounded bg-indigo-600/20 text-indigo-300 text-[10px] font-semibold cursor-pointer border border-indigo-500/30">Expand</button>                        </div>
 
                         <div id="edit-banner" class="hidden items-center justify-between bg-indigo-950/80 border border-indigo-500/40 px-2.5 py-1 rounded-lg mb-1.5 text-[10px] text-indigo-200">
                             <span>Editing message...</span>
@@ -305,7 +305,7 @@
     let isAudioMuted = true, isVideoStopped = false, isScreenSharing = false;
     let participantName = "Anonymous", editingMessageId = null;
     let chatMessages = [], isChatExpanded = false;
-    let chatUnsubscribe = null;
+    let chatUnsubscribe = null, roomUnsubscribe = null;
     let pomoInterval = null, pomoTimeLeft = 25 * 60, pomoRunning = false;
     let glossaryHistory = [];
 
@@ -415,9 +415,9 @@
 
         await initWebRTC(currentRoomId);
         initFirestoreChat(currentRoomId);
+        initRoomSync(currentRoomId);
     };
 
-    // IN-ROOM MEDIA TOGGLES
     window.toggleAudio = function() {
         if (!localStream) return;
         isAudioMuted = !isAudioMuted;
@@ -458,7 +458,6 @@
         });
     };
 
-    // CHAT PANEL EXPAND TOGGLE
     window.toggleChatExpand = function() {
         isChatExpanded = !isChatExpanded;
         const chatContainer = document.getElementById('group-chat-box');
@@ -477,7 +476,6 @@
         }
     };
 
-    // GLOSSARY HISTORY LOGIC
     function loadGlossaryHistory() {
         const saved = localStorage.getItem('meetsync_glossary_history');
         if(saved) {
@@ -495,7 +493,7 @@
         box.innerHTML = '';
         glossaryHistory.forEach(item => {
             box.innerHTML += `
-                <div class="p-3 bg-slate-900/80 rounded-xl border border-slate-800 mb-2">
+                <div class="p-3 bg-slate-900/85 rounded-xl border border-slate-800 mb-2">
                     <div class="font-bold text-teal-300 capitalize">${escapeHTML(item.term)}</div>
                     <div class="text-slate-300 mt-1">${escapeHTML(item.definition)}</div>
                 </div>
@@ -506,9 +504,8 @@
     window.lookupGlossaryTerm = async function() {
         const term = document.getElementById('glossary-query').value.trim();
         if(!term) return;
-        
         let apiKey = localStorage.getItem('meetsync_groq_key');
-        if (!apiKey) { apiKey = prompt("Enter your free Groq API Key:"); localStorage.setItem('meetsync_groq_key', apiKey.trim()); }
+        if (!apiKey) { apiKey = prompt("Enter your free Groq API Key:"); if(apiKey) localStorage.setItem('meetsync_groq_key', apiKey.trim()); else return; }
 
         try {
             const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -521,15 +518,12 @@
             });
             const data = await res.json();
             const reply = data.choices?.[0]?.message?.content || "No definition found.";
-            
             glossaryHistory.unshift({ term: term, definition: reply });
             if(glossaryHistory.length > 20) glossaryHistory.pop();
             localStorage.setItem('meetsync_glossary_history', JSON.stringify(glossaryHistory));
             renderGlossaryHistory();
             document.getElementById('glossary-query').value = "";
-        } catch(e) {
-            alert("Error querying AI glossary.");
-        }
+        } catch(e) { alert("Error querying AI glossary."); }
     };
 
     window.exportStudyNotes = function() {
@@ -545,12 +539,9 @@
     function initFirestoreChat(roomId) {
         const messagesRef = db.collection('rooms').doc(roomId).collection('messages');
         if (chatUnsubscribe) chatUnsubscribe();
-
         chatUnsubscribe = messagesRef.orderBy('createdAt', 'asc').onSnapshot(snapshot => {
             chatMessages = [];
-            snapshot.forEach(doc => {
-                chatMessages.push({ id: doc.id, ...doc.data() });
-            });
+            snapshot.forEach(doc => { chatMessages.push({ id: doc.id, ...doc.data() }); });
             renderChatBox();
         });
     }
@@ -566,14 +557,6 @@
             const alignClass = isMe ? 'text-right' : 'text-left';
             const bubbleColor = isMe ? 'bg-indigo-600/40 border-indigo-500/30 text-indigo-100' : 'bg-slate-800/80 border-slate-700/60 text-slate-200';
             
-            let actionDropdown = isMe ? `
-                <div class="chat-action-menu hidden absolute right-0 top-full mt-1 bg-slate-900 border border-slate-700 rounded-lg shadow-xl py-1 z-20 flex-col text-left min-w-[90px]">
-                    <button onclick="deleteMessage('${msg.id}')" class="px-3 py-1.5 text-[11px] text-rose-400 hover:bg-slate-800">Delete</button>
-                </div>` : `
-                <div class="chat-action-menu hidden absolute left-0 top-full mt-1 bg-slate-900 border border-slate-700 rounded-lg shadow-xl py-1 z-20 flex-col text-left min-w-[90px]">
-                    <button onclick="quoteMessage('${encodeURIComponent(msg.sender)}', '${encodeURIComponent(msg.text)}')" class="px-3 py-1.5 text-[11px] text-teal-300 hover:bg-slate-800">Quote</button>
-                </div>`;
-
             chatContainer.innerHTML += `
                 <div class="${alignClass} mb-3 relative">
                     <div class="chat-bubble-container inline-block relative max-w-[92%]">
@@ -584,7 +567,6 @@
                             </div>
                             <div class="text-xs leading-relaxed">${escapeHTML(msg.text || '')}</div>
                         </div>
-                        ${actionDropdown}
                     </div>
                 </div>`;
         });
@@ -595,23 +577,12 @@
         const input = document.getElementById('group-chat-input');
         const text = input.value.trim();
         if (!text || !currentRoomId) return;
-
-        const messagesRef = db.collection('rooms').doc(currentRoomId).collection('messages');
-        await messagesRef.add({
-            sender: participantName,
-            text: text,
-            createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-            edited: false
+        await db.collection('rooms').doc(currentRoomId).collection('messages').add({
+            sender: participantName, text: text, createdAt: firebase.firestore.FieldValue.serverTimestamp(), edited: false
         });
         input.value = "";
     };
 
-    window.deleteMessage = async function(msgId) {
-        if (!currentRoomId) return;
-        await db.collection('rooms').doc(currentRoomId).collection('messages').doc(msgId).delete();
-    };
-
-    window.quoteMessage = function(s, t) { document.getElementById('group-chat-input').value = `> @${decodeURIComponent(s)}: "${decodeURIComponent(t)}"\n`; };
     function escapeHTML(str) { return str.replace(/[&<>'"]/g, t => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[t] || t)); }
 
     async function initWebRTC(roomId) {
@@ -626,31 +597,22 @@
 
         peerConnection.ontrack = event => {
             event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
-            const waitingOverlay = document.getElementById('waiting-overlay');
-            if (waitingOverlay) waitingOverlay.classList.add('hidden');
-            if (remoteVideo) remoteVideo.classList.remove('hidden');
-            const remoteFooter = document.getElementById('remote-footer');
-            if (remoteFooter) remoteFooter.classList.remove('hidden');
+            document.getElementById('waiting-overlay')?.classList.add('hidden');
+            document.getElementById('remote-video')?.classList.remove('hidden');
+            document.getElementById('remote-footer')?.classList.remove('hidden');
         };
 
         const roomRef = db.collection('rooms').doc(roomId);
         const snap = await roomRef.get();
-
         const offerCandidates = roomRef.collection('offerCandidates');
         const answerCandidates = roomRef.collection('answerCandidates');
 
         if (!snap.exists) {
             window.isAdmin = true; 
-            
             peerConnection.onicecandidate = e => e.candidate && offerCandidates.add(e.candidate.toJSON());
-            
             const offer = await peerConnection.createOffer();
             await peerConnection.setLocalDescription(offer);
-            
-            await roomRef.set({ 
-                offer: { type: offer.type, sdp: offer.sdp },
-                adminName: participantName 
-            });
+            await roomRef.set({ offer: { type: offer.type, sdp: offer.sdp }, adminName: participantName });
 
             roomRef.onSnapshot(async s => {
                 const d = s.data();
@@ -664,48 +626,26 @@
             });
 
             answerCandidates.onSnapshot(s => {
-                s.docChanges().forEach(c => {
-                    if (c.type === 'added') {
-                        peerConnection.addIceCandidate(new RTCIceCandidate(c.doc.data()));
-                    }
-                });
+                s.docChanges().forEach(c => { if (c.type === 'added') peerConnection.addIceCandidate(new RTCIceCandidate(c.doc.data())); });
             });
-
         } else {
             window.isAdmin = false; 
-
             peerConnection.onicecandidate = e => e.candidate && answerCandidates.add(e.candidate.toJSON());
-
             const data = snap.data();
-            
             if (data && data.adminName) {
                 const remoteLabel = document.getElementById('remote-name-label');
                 if (remoteLabel) remoteLabel.innerText = data.adminName;
             }
-
             if (data && data.offer) {
                 await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
                 const answer = await peerConnection.createAnswer();
                 await peerConnection.setLocalDescription(answer);
-                
-                await roomRef.update({ 
-                    answer: { type: answer.type, sdp: answer.sdp },
-                    participantName: participantName 
-                });
+                await roomRef.update({ answer: { type: answer.type, sdp: answer.sdp }, participantName: participantName });
             }
-
             offerCandidates.onSnapshot(s => {
-                s.docChanges().forEach(c => {
-                    if (c.type === 'added') {
-                        peerConnection.addIceCandidate(new RTCIceCandidate(c.doc.data()));
-                    }
-                });
+                s.docChanges().forEach(c => { if (c.type === 'added') peerConnection.addIceCandidate(new RTCIceCandidate(c.doc.data())); });
             });
         }
-
-        document.querySelectorAll('.admin-only-control').forEach(el => {
-            el.style.display = window.isAdmin ? 'flex' : 'none';
-        });
     }
 
     window.toggleScreenShare = async function() {
@@ -718,12 +658,8 @@
                 document.getElementById('local-video').srcObject = stream;
                 isScreenSharing = true;
                 track.onended = () => stopScreenShare();
-            } else { 
-                stopScreenShare(); 
-            }
-        } catch(e) {
-            console.error("Screen share error:", e);
-        }
+            } else { stopScreenShare(); }
+        } catch(e) { console.error("Screen share error:", e); }
     };
 
     function stopScreenShare() {
@@ -734,21 +670,71 @@
         if (localStream) document.getElementById('local-video').srcObject = localStream;
     }
 
-    window.leaveRoom = function() { if(localStream) localStream.getTracks().forEach(t => t.stop()); window.location.href = window.location.pathname; };
-    window.toggleReaderModal = function() { document.getElementById('reader-modal').classList.toggle('hidden'); };
+    window.leaveRoom = function() { 
+        if(roomUnsubscribe) roomUnsubscribe();
+        if(chatUnsubscribe) chatUnsubscribe();
+        if(localStream) localStream.getTracks().forEach(t => t.stop()); 
+        window.location.href = window.location.pathname; 
+    };
+
+    window.toggleReaderModal = function() { 
+        document.getElementById('reader-modal').classList.toggle('hidden');
+        const readerBox = document.getElementById('modal-chat-box');
+        const mainAiBox = document.getElementById('chat-box');
+        if(readerBox && mainAiBox) readerBox.innerHTML = mainAiBox.innerHTML;
+    };
+
     window.toggleGlossaryModal = function() { document.getElementById('glossary-modal').classList.toggle('hidden'); };
 
-    window.togglePomodoro = function() {
+    // POMODORO REAL-TIME SYNC
+    function initRoomSync(roomId) {
+        const roomRef = db.collection('rooms').doc(roomId);
+        roomUnsubscribe = roomRef.onSnapshot(doc => {
+            const data = doc.data();
+            if (data && data.pomoState) {
+                pomoTimeLeft = data.pomoState.timeLeft;
+                pomoRunning = data.pomoState.running;
+                updatePomoDisplay();
+                const btn = document.getElementById('pomo-btn');
+                if (btn) btn.innerText = pomoRunning ? "Pause" : "Start";
+            }
+        });
+    }
+
+    window.togglePomodoro = async function() {
+        pomoRunning = !pomoRunning;
         const btn = document.getElementById('pomo-btn');
-        if (!pomoRunning) {
-            pomoRunning = true; btn.innerText = "Pause";
-            pomoInterval = setInterval(() => {
-                if (pomoTimeLeft > 0) { pomoTimeLeft--; updatePomoDisplay(); }
-                else { clearInterval(pomoInterval); pomoRunning = false; alert("Session done!"); }
+        if (btn) btn.innerText = pomoRunning ? "Pause" : "Resume";
+        
+        if (pomoRunning && !pomoInterval) {
+            pomoInterval = setInterval(async () => {
+                if (pomoTimeLeft > 0) {
+                    pomoTimeLeft--;
+                    updatePomoDisplay();
+                    if (window.isAdmin && currentRoomId) {
+                        await db.collection('rooms').doc(currentRoomId).set({ pomoState: { timeLeft: pomoTimeLeft, running: pomoRunning } }, { merge: true });
+                    }
+                } else {
+                    clearInterval(pomoInterval); pomoInterval = null; pomoRunning = false;
+                    alert("Session done!");
+                }
             }, 1000);
-        } else { pomoRunning = false; clearInterval(pomoInterval); btn.innerText = "Resume"; }
+        } else if (!pomoRunning) {
+            clearInterval(pomoInterval); pomoInterval = null;
+        }
+        if (currentRoomId) {
+            await db.collection('rooms').doc(currentRoomId).set({ pomoState: { timeLeft: pomoTimeLeft, running: pomoRunning } }, { merge: true });
+        }
     };
-    window.resetPomodoro = function() { clearInterval(pomoInterval); pomoRunning = false; pomoTimeLeft = 25 * 60; updatePomoDisplay(); };
+
+    window.resetPomodoro = async function() {
+        clearInterval(pomoInterval); pomoInterval = null; pomoRunning = false; pomoTimeLeft = 25 * 60;
+        updatePomoDisplay();
+        if (currentRoomId) {
+            await db.collection('rooms').doc(currentRoomId).set({ pomoState: { timeLeft: pomoTimeLeft, running: pomoRunning } }, { merge: true });
+        }
+    };
+
     function updatePomoDisplay() {
         const m = Math.floor(pomoTimeLeft / 60), s = pomoTimeLeft % 60;
         const disp = document.getElementById('pomo-display');
@@ -760,14 +746,16 @@
         document.getElementById('tab-content-ai').classList.toggle('hidden', tab !== 'ai');
     };
 
-    async function processGroqQuery(query) {
+    async function processGroqQuery(query, targetBoxId = 'chat-box') {
         if(!query) return;
         let apiKey = localStorage.getItem('meetsync_groq_key');
-        if (!apiKey) { apiKey = prompt("Enter your free Groq API Key:"); localStorage.setItem('meetsync_groq_key', apiKey.trim()); }
+        if (!apiKey) { apiKey = prompt("Enter your free Groq API Key:"); if(apiKey) localStorage.setItem('meetsync_groq_key', apiKey.trim()); else return; }
 
-        const userHtml = `<div class="text-right mb-3"><span class="bg-indigo-600/40 px-3 py-1.5 rounded-xl inline-block"><b>You:</b> ${query}</span></div>`;
-        document.getElementById('chat-box').innerHTML += userHtml;
-        document.getElementById('ai-input').value = "";
+        const box = document.getElementById(targetBoxId);
+        if(box) box.innerHTML += `<div class="text-right mb-3"><span class="bg-indigo-600/40 px-3 py-1.5 rounded-xl inline-block"><b>You:</b> ${escapeHTML(query)}</span></div>`;
+        
+        if(targetBoxId === 'ai-input') document.getElementById('ai-input').value = "";
+        if(targetBoxId === 'modal-ai-input') document.getElementById('modal-ai-input').value = "";
 
         try {
             const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -777,10 +765,15 @@
             });
             const data = await res.json();
             const reply = data.choices?.[0]?.message?.content || "No response.";
-            document.getElementById('chat-box').innerHTML += `<div class="text-left mb-4"><div class="bg-slate-900/95 border border-slate-800 p-3 rounded-xl"><b>Groq AI:</b><br>${reply}</div></div>`;
+            if(box) {
+                box.innerHTML += `<div class="text-left mb-4"><div class="bg-slate-900/95 border border-slate-800 p-3 rounded-xl"><b>Groq AI:</b><br>${escapeHTML(reply)}</div></div>`;
+                box.scrollTop = box.scrollHeight;
+            }
         } catch(e) { alert(e.message); }
     }
-    window.askAI = function() { processGroqQuery(document.getElementById('ai-input').value.trim()); };
+
+    window.askAI = function() { processGroqQuery(document.getElementById('ai-input').value.trim(), 'chat-box'); };
+    window.askAIMoadal = function() { processGroqQuery(document.getElementById('modal-ai-input').value.trim(), 'modal-chat-box'); };
     window.exportToAnki = function() { alert("Anki deck formatted and ready!"); };
 </script>
 </body>
