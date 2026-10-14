@@ -178,8 +178,7 @@
                     <div id="tab-content-chat" class="flex flex-col flex-grow overflow-hidden transition-all duration-300">
                         <div class="flex justify-between items-center mb-1">
                             <span class="text-[10px] text-slate-400 font-medium">Session Chat</span>
-                            <button onclick="toggleChatExpansion()" id="chat-expand-btn" class="px-2 py-0.5 rounded bg-indigo-600/20 text-indigo-300 text-[10px] font-semibold cursor-pointer border border-indigo-500/30">Expand</button>
-                        </div>
+                              <button onclick="toggleChatExpand()" id="chat-expand-btn" class="px-2 py-0.5 rounded bg-indigo-600/20 text-indigo-300 text-[10px] font-semibold cursor-pointer border border-indigo-500/30">Expand</button>                        </div>
 
                         <div id="edit-banner" class="hidden items-center justify-between bg-indigo-950/80 border border-indigo-500/40 px-2.5 py-1 rounded-lg mb-1.5 text-[10px] text-indigo-200">
                             <span>Editing message...</span>
@@ -286,7 +285,7 @@
         </div>
     </div>
 
-   <script>
+<script>
     const firebaseConfig = {
         apiKey: "AIzaSyAb9-tARrdYaVMj4M1j8WFLf1AcH77koak",
         authDomain: "meetsync-signalling.firebaseapp.com",
@@ -457,6 +456,25 @@
                 alert("Room link copied to clipboard!");
             }
         });
+    };
+
+    // CHAT PANEL EXPAND TOGGLE
+    window.toggleChatExpand = function() {
+        isChatExpanded = !isChatExpanded;
+        const chatContainer = document.getElementById('group-chat-box');
+        const expandBtn = document.getElementById('chat-expand-btn');
+        const chatCard = chatContainer ? chatContainer.closest('.glass-panel, .border') || chatContainer.parentElement : null;
+
+        if (chatCard) {
+            chatCard.style.height = isChatExpanded ? '65vh' : 'auto';
+            chatCard.style.transition = 'height 0.3s ease-in-out';
+        }
+        if (chatContainer) {
+            chatContainer.style.height = isChatExpanded ? '45vh' : '180px';
+        }
+        if (expandBtn) {
+            expandBtn.innerText = isChatExpanded ? 'Collapse' : 'Expand';
+        }
     };
 
     // GLOSSARY HISTORY LOGIC
@@ -695,19 +713,25 @@
             if (!isScreenSharing) {
                 const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
                 const track = stream.getVideoTracks()[0];
-                peerConnection.getSenders().find(s => s.track && s.track.kind === 'video').replaceTrack(track);
+                const sender = peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
+                if (sender) await sender.replaceTrack(track);
                 document.getElementById('local-video').srcObject = stream;
                 isScreenSharing = true;
                 track.onended = () => stopScreenShare();
-            } else { stopScreenShare(); }
-        } catch(e) {}
+            } else { 
+                stopScreenShare(); 
+            }
+        } catch(e) {
+            console.error("Screen share error:", e);
+        }
     };
 
     function stopScreenShare() {
         isScreenSharing = false;
-        const track = localStream.getVideoTracks()[0];
-        peerConnection.getSenders().find(s => s.track && s.track.kind === 'video').replaceTrack(track);
-        document.getElementById('local-video').srcObject = localStream;
+        const track = localStream ? localStream.getVideoTracks()[0] : null;
+        const sender = peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
+        if (sender && track) sender.replaceTrack(track);
+        if (localStream) document.getElementById('local-video').srcObject = localStream;
     }
 
     window.leaveRoom = function() { if(localStream) localStream.getTracks().forEach(t => t.stop()); window.location.href = window.location.pathname; };
