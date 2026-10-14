@@ -567,7 +567,8 @@
             const snap = await roomRef.get();
 
             if (!snap.exists) {
-                const offerCandidates = roomRef.collection('offerCandidates');
+                window.isAdmin = true; // <-- ADD THIS LINE HERE
+                 const offerCandidates = roomRef.collection('offerCandidates');
                 const answerCandidates = roomRef.collection('answerCandidates');
                 peerConnection.onicecandidate = e => e.candidate && offerCandidates.add(e.candidate.toJSON());
                 const offer = await peerConnection.createOffer();
@@ -581,7 +582,11 @@
                     }
                 });
                 answerCandidates.onSnapshot(s => s.docChanges().forEach(c => c.type === 'added' && peerConnection.addIceCandidate(new RTCIceCandidate(c.doc.data()))));
-            } else {
+    
+        } else {
+    window.isAdmin = false; // <-- ADD THIS LINE HERE
+    // ... rest of your existing answer/candidate code ...
+}
                 const data = snap.data();
                 const offerCandidates = roomRef.collection('offerCandidates');
                 const answerCandidates = roomRef.collection('answerCandidates');
@@ -592,14 +597,17 @@
                 await roomRef.update({ answer: { type: answer.type, sdp: answer.sdp } });
                 offerCandidates.onSnapshot(s => s.docChanges().forEach(c => c.type === 'added' && peerConnection.addIceCandidate(new RTCIceCandidate(c.doc.data()))));
             }
-        }
+    
 
         window.copyInviteLink = function() {
             navigator.clipboard.writeText(window.location.href).then(() => {
                 document.getElementById('copy-btn-text').innerText = "Copied Link! ✓";
                 setTimeout(() => { document.getElementById('copy-btn-text').innerText = "Copy Invite Link"; }, 2500);
             });
-        };
+            document.querySelectorAll('.admin-only-control').forEach(el => {
+        el.style.display = window.isAdmin ? 'flex' : 'none';
+    });
+};
 
         window.toggleAudio = function() {
             if (!localStream) return;
